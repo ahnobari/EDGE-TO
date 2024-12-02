@@ -13,3 +13,4 @@ vtk==9.2.6
 pygmsh==7.1.17
 matplotlib==3.8.4
 jupyter
+tqdm
