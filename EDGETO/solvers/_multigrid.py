@@ -12,7 +12,7 @@ class MultiGrid(Solver):
     def __init__(self, mesh: Union[StructuredMesh2D,StructuredMesh3D],
                  kernel: StiffnessKernel, maxiter=1000, tol=1e-5, n_smooth=3,
                  omega=0.5 , n_level = 3, cycle='W', w_level=1, coarse_solver='splu',
-                 matrix_free=False, low_level_tol = 1e-8, low_level_maxiter=5000):
+                 matrix_free=False, low_level_tol = 1e-8, low_level_maxiter=5000, min_omega=0.4, omega_boost=1.06):
         super().__init__()
         self.kernel = kernel
         self.mesh = mesh
@@ -21,6 +21,10 @@ class MultiGrid(Solver):
         self.maxiter = maxiter
         self.n_smooth = n_smooth
         self.omega = omega
+        self.max_omega = omega
+        self.min_omega = max(omega/2, min_omega)
+        self.d_omega = (self.max_omega - self.min_omega)
+        self.omega_boost = omega_boost
         self.n_level = n_level
         self.cycle = cycle
         self.w_level = w_level
@@ -29,6 +33,9 @@ class MultiGrid(Solver):
         self.coarse_solver = coarse_solver
         self.low_level_tol = low_level_tol
         self.low_level_maxiter = low_level_maxiter
+        
+        if isinstance(self.w_level, int):
+            self.w_level = [self.w_level]
         
         if self.coarse_solver in ['splu', 'spsolve'] and self.matrix_free:
             raise ValueError("Matrix free is not supported with splu solver use cg instead.")
@@ -119,8 +126,9 @@ class MultiGrid(Solver):
         
         # presmooth
         A, D = self.levels[level]
+        self.omega = self.omega * (1.06)**(level)
         x = self._jacobi_smoother(x, b, A, D, self.n_smooth)
-        
+        self.omega = self.omega / (1.06)**(level)
         # residual
         r = b - A@x
         
@@ -138,11 +146,13 @@ class MultiGrid(Solver):
         e = apply_prolongation(e,nel,self.dof)
         # e = self.PRs[level][0] @ e
         
+        self.omega = self.omega * (1.06)**(level)
         e = self._jacobi_smoother(e, r, A, D, self.n_smooth)
+        self.omega = self.omega / (1.06)**(level)
         
         x += e
         
-        if self.cycle == 'w' and level == self.w_level:
+        if self.cycle == 'w' and level in self.w_level:
             r = b - A@x
         
             # restrict
@@ -157,7 +167,9 @@ class MultiGrid(Solver):
             e = apply_prolongation(e,nel,self.dof)
             # e = self.PRs[level][0] @ e
             
+            self.omega = self.omega * (1.06)**(level)
             e = self._jacobi_smoother(e, r, A, D, self.n_smooth)
+            self.omega = self.omega / (1.06)**(level)
             
             x += e
         
@@ -198,9 +210,10 @@ class MultiGrid(Solver):
             r -= alpha * q
             
             norm_r = (r*r).sum()**0.5
-            if norm_r / norm_b < self.tol:
+            R = norm_r / norm_b
+            if R < self.tol:
                 break
-            
+            self.omega = self.min_omega + self.d_omega/2*np.exp((-np.clip(R,self.tol,1e-1)+self.tol)*500)
             z = v_cycle(np.zeros_like(r), r,0)
             rho_new = (r*z).sum()
             beta = rho_new / rho_old
