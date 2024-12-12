@@ -964,21 +964,23 @@ void matmat_node_basis_nnz_per_row_wcon_kernel(int* elements_flat, int* el_ids, 
         
         for (int l = 0; l < elements_size*dof; l++) {
             int jj = elements_flat[start + l/dof]*dof + l%dof;
-            if (con_map[jj] == true) {
-                continue;
-            }
+            
+            if (con_map[jj] == true) continue;
+            
             for (int kk = Bp[jj]; kk < Bp[jj+1]; kk++) {
                 int k = Bj[kk];
-                for (int d = 0; d < dof; d++) {
-                    if (con_map[i*dof+d] == true) {
-                        continue;
-                    }
-                    for (int ll = 0; ll < max_nnz; ll++) {
-                        if (rolling_index[ll] == k) {
-                            break;
-                        } else if (rolling_index[ll] == -1) {
-                            rolling_index[ll] = k;
+                for (int ll = 0; ll < max_nnz; ll++) {
+                    if (rolling_index[ll] == k) {
+                        break;
+                    } else if (rolling_index[ll] == -1) {
+                        rolling_index[ll] = k;
+                        for (int d = 0; d < dof; d++) {
                             atomicAdd(&nnz_per_row[i*dof + d], 1);
+                        }
+                        break;
+                        if (ll == max_nnz-1){
+                            printf("Error: Exceeded maximum number of nonzeros per row");
+                            return;
                         }
                     }
                 }
@@ -998,7 +1000,7 @@ matmat_node_basis_flat_nnz_per_row_wcon_kernel_code = '''
 extern "C" __global__
 void matmat_node_basis_flat_nnz_per_row_kernel(int* elements_flat, int* elements_ptr, 
     int* el_ids, int* sorter, int* node_ids, int n_nodes, int dof, int n_col,
-    int* Bp, int* Bj, int elem_flat_size, int* nnz_per_row, bool* con_map) {
+    int* Bp, int* Bj, int elem_flat_size, int* nnz_per_row) {
     
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_nodes) return;
@@ -1029,22 +1031,24 @@ void matmat_node_basis_flat_nnz_per_row_kernel(int* elements_flat, int* elements
         
         for (int l = 0; l < size*dof; l++) {
             int jj = elements_flat[start + l/dof]*dof + l%dof;
-            if (con_map[jj] == true) {
-                continue;
-            }
+            
+            if (con_map[jj] == true) continue;
+            
             for (int kk = Bp[jj]; kk < Bp[jj+1]; kk++) {
                 int k = Bj[kk];
-                for (int d = 0; d < dof; d++) {
-                    if (con_map[i*dof+d] == true) {
-                        continue;
-                    }
-                    for (int ll = 0; ll < max_nnz; ll++) {
-                        if (rolling_index[ll] == k) {
-                            break;
-                        } else if (rolling_index[ll] == -1) {
-                            rolling_index[ll] = k;
+                for (int ll = 0; ll < max_nnz; ll++) {
+                    if (rolling_index[ll] == k) {
+                        break;
+                    } else if (rolling_index[ll] == -1) {
+                        rolling_index[ll] = k;
+                        for (int d = 0; d < dof; d++) {
                             atomicAdd(&nnz_per_row[i*dof + d], 1);
                         }
+                        break;
+                    }
+                    if (ll == max_nnz-1){
+                        printf("Error: Exceeded maximum number of nonzeros per row");
+                        return;
                     }
                 }
             }
@@ -1063,7 +1067,7 @@ void matmat_node_basis_flat_nnz_per_row_kernel(int* elements_flat, int* elements
 def get_matmat_node_basis_nnz_per_row_wcon_kernel(max_nnz):
     return cp.RawKernel(
         matmat_node_basis_nnz_per_row_wcon_kernel_code.replace('max_nnz', str(max_nnz)), 
-        'matmat_node_basis_nnz_per_row_kernel'
+        'matmat_node_basis_nnz_per_row_wcon_kernel'
     )
 
 def matmat_node_basis_nnz_per_row_wcon_kernel(B,T,A, max_nnz):

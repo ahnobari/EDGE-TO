@@ -11,10 +11,12 @@ from ._cuda import (
     process_dk_full_kernel_cuda,
     process_dk_flat_kernel_cuda,
     matmat_node_basis_nnz_per_row_kernel,
+    matmat_node_basis_nnz_per_row_wcon_kernel,
     matmat_node_basis_parallel_kernel,
     matmat_node_basis_full_parallel_kernel,
     matmat_node_basis_flat_parallel_kernel,
     matmat_node_basis_flat_nnz_per_row_kernel,
+    matmat_node_basis_flat_nnz_per_row_wcon_kernel,
     matmat_node_basis_parallel_wcon_kernel,
     matmat_node_basis_full_parallel_wcon_kernel,
     matmat_node_basis_flat_parallel_wcon_kernel,
@@ -122,6 +124,25 @@ def matmat_node_basis_nnz_per_row_cuda(elements_flat, el_ids, sorter, node_ids, 
                         
     return nnz_per_row
 
+def matmat_node_basis_nnz_per_row_wcon_cuda(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz, cons):
+    
+    # Initialize output array
+    nnz_per_row = cp.zeros(n_nodes*dof, dtype=np.int32)
+
+    # Launch parameters
+    threadsperblock = 256
+    blockspergrid = (n_nodes + (threadsperblock - 1)) // threadsperblock
+    # print(matmat_node_basis_nnz_per_row_kernel_code.replace('max_nnz', str(int(np.ceil(max_nnz/32))*32)))
+    # matmat_node_basis_nnz_per_row_kernel = cp.RawKernel(matmat_node_basis_nnz_per_row_kernel_code.replace('max_nnz', str(int(np.ceil(max_nnz/32))*32)), 'matmat_node_basis_nnz_per_row_kernel')
+    max_nnz = int(np.ceil(max_nnz/32))*32
+    # Launch kernel
+    matmat_node_basis_nnz_per_row_wcon_kernel((blockspergrid,), (threadsperblock,),
+                                        (elements_flat, el_ids, sorter, node_ids, n_nodes, 
+                                        dof, elements_size, n_col, Bp, Bj, 
+                                        elements_flat.shape[0], nnz_per_row, cons),max_nnz)
+                        
+    return nnz_per_row
+
 
 def matmat_node_basis_parallel_cuda(K_single, elements_flat, el_ids, weights, sorter, node_ids, n_nodes, dof, elements_size, B, max_source_nnz=None, cons=None):
     n_col = B.shape[1]
@@ -137,7 +158,10 @@ def matmat_node_basis_parallel_cuda(K_single, elements_flat, el_ids, weights, so
     else:
         max_nnz = int(max_source_nnz *  cp.diff(Bp).max())
     
-    nnz_per_row = matmat_node_basis_nnz_per_row_cuda(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
+    if cons is None:
+        nnz_per_row = matmat_node_basis_nnz_per_row_cuda(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
+    else:
+        nnz_per_row = matmat_node_basis_nnz_per_row_wcon_cuda(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz, cons)
     
     # Launch parameters
     threadsperblock = 256
@@ -207,6 +231,26 @@ def matmat_node_basis_flat_nnz_per_row_cuda(elements_flat, elements_ptr, el_ids,
     
     return nnz_per_row
 
+def matmat_node_basis_flat_nnz_per_row_wcon_cuda(elements_flat, elements_ptr, el_ids,
+                                                sorter, node_ids, n_nodes, dof, n_col,
+                                                Bp, Bj, max_nnz, cons):
+    # Initialize output array
+    nnz_per_row = cp.zeros(n_nodes*dof, dtype=cp.int32)
+    
+    # Launch parameters
+    threadsperblock = 256
+    blockspergrid = (n_nodes + (threadsperblock - 1)) // threadsperblock
+    
+    max_nnz = int(np.ceil(max_nnz/32))*32
+    # Launch kernel
+    matmat_node_basis_flat_nnz_per_row_wcon_kernel(
+        (blockspergrid,), (threadsperblock,),
+        (elements_flat, elements_ptr, el_ids, sorter, node_ids, n_nodes,
+            dof, n_col, Bp, Bj, elements_flat.shape[0], nnz_per_row, cons), max_nnz
+    )
+    
+    return nnz_per_row
+
 def matmat_node_basis_full_parallel_cuda(Ks, elements_flat, el_ids, weights, sorter, node_ids, 
                                        n_nodes, dof, elements_size, B, max_source_nnz=None, cons=None):
     n_col = B.shape[1]
@@ -222,8 +266,11 @@ def matmat_node_basis_full_parallel_cuda(Ks, elements_flat, el_ids, weights, sor
     else:
         max_nnz = int(max_source_nnz *  cp.diff(Bp).max())
     
-    nnz_per_row = matmat_node_basis_nnz_per_row_cuda(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
-    
+    if cons is None:
+        nnz_per_row = matmat_node_basis_nnz_per_row_cuda(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
+    else:
+        nnz_per_row = matmat_node_basis_nnz_per_row_wcon_cuda(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz, cons)
+        
     # Launch parameters
     threadsperblock = 256
     blockspergrid = (n_nodes + (threadsperblock - 1)) // threadsperblock
@@ -305,10 +352,16 @@ def matmat_node_basis_flat_parallel_cuda(K_flat, elements_flat, K_ptr, elements_
     else:
         max_nnz = int(max_source_nnz * cp.diff(Bp).max())
     
-    nnz_per_row = matmat_node_basis_flat_nnz_per_row_cuda(
-        elements_flat, elements_ptr, el_ids, sorter, node_ids, 
-        n_nodes, dof, n_col, Bp, Bj, max_nnz
-    )
+    if cons is None:
+        nnz_per_row = matmat_node_basis_flat_nnz_per_row_cuda(
+            elements_flat, elements_ptr, el_ids, sorter, node_ids, 
+            n_nodes, dof, n_col, Bp, Bj, max_nnz
+        )
+    else:
+        nnz_per_row = matmat_node_basis_flat_nnz_per_row_wcon_cuda(
+            elements_flat, elements_ptr, el_ids, sorter, node_ids, 
+            n_nodes, dof, n_col, Bp, Bj, max_nnz, cons
+        )
 
     # Launch parameters
     threadsperblock = 256

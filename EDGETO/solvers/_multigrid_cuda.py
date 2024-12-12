@@ -104,15 +104,15 @@ class MultiGrid(Solver):
                 op = get_restricted_l1p_cuda(self.levels[-1][0], self.mesh.nel//(2**i), self.dof, Cp = Cp)
                 D = 1/op.diagonal()
                 
-                if i == self.n_level-1:
-                   op.sum_duplicates()
+                # if i == self.n_level-1:
+                #    op.sum_duplicates()
                 
                 self.levels.append((op, D))
             else:
                 op = get_restricted_l1p_cuda(self.levels[-1][0], self.mesh.nel//(2**i), self.dof, Cp = self.ptr[i])
                 D = 1/op.diagonal()
-                if i == self.n_level-1:
-                    op.sum_duplicates()
+                # if i == self.n_level-1:
+                #     op.sum_duplicates()
                 self.levels.append((op, D))
                 
             np.get_default_memory_pool().free_all_blocks()

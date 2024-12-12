@@ -124,7 +124,7 @@ class SPSOLVE(Solver):
                 raise ValueError("Solver requires a density vector to be passed or set on the kernel.")
             K = self.kernel.construct(self.kernel.rho)
         
-        out = cp.zeros_like(rhs)
+        out = cp.copy(rhs)
         
         if self.kernel.has_con:
             K = K[:,self.kernel.non_con_map][self.kernel.non_con_map,:]

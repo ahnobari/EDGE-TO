@@ -841,9 +841,9 @@ void matmat_node_basis_full_parallel_wcon_kernel(T* Ks, int* elements_flat, int*
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_nodes) return;
 
-    int start_ = Cp[i*dof];
-    int end_ = Cp[i*dof+1];
-    int length = end_ - start_;
+    // int start_ = Cp[i*dof];
+    // int end_ = Cp[i*dof+1];
+    // int length = end_ - start_;
 
     int st, en;
     if (i < n_nodes-1) {
@@ -874,16 +874,20 @@ void matmat_node_basis_full_parallel_wcon_kernel(T* Ks, int* elements_flat, int*
                     if (con_map[i*dof+d] == true) {
                         continue;
                     }
+
+                    int start_ = Cp[i*dof+d];
+                    int end_ = Cp[i*dof+d+1];
+
                     for (int ll = start_; ll < end_; ll++) {
-                        if (Cj[ll + length * d] == k) {
-                            atomicAdd(&Cx[ll + length * d], 
+                        if (Cj[ll] == k) {
+                            atomicAdd(&Cx[ll], 
                                     Ks[elements_ids_j * elements_size * dof * elements_size * dof + 
                                     (relative_dof*dof+d) * elements_size * dof + l] * 
                                     Bx[kk] * weight);
                             break;
-                        } else if (Cj[ll + length * d] == -1) {
-                            Cj[ll + length * d] = k;
-                            atomicAdd(&Cx[ll + length * d], 
+                        } else if (Cj[ll] == -1) {
+                            Cj[ll] = k;
+                            atomicAdd(&Cx[ll], 
                                     Ks[elements_ids_j * elements_size * dof * elements_size * dof + 
                                     (relative_dof*dof+d) * elements_size * dof + l] * 
                                     Bx[kk] * weight);
@@ -899,15 +903,11 @@ void matmat_node_basis_full_parallel_wcon_kernel(T* Ks, int* elements_flat, int*
         if (con_map[i*dof+d] == true) {
             int jj = i*dof+d;
             int count = 0;
+            int start_ = Cp[i*dof+d];
             for (int kk = Bp[jj]; kk < Bp[jj+1]; kk++){
                 int k = Bj[kk];
-                Cj[start_ + length * d + count] = k;
-                Cx[start_ + length * d + count] = Bx[kk];
-                count++;
-            }
-            while (count < length) {
-                Cj[start_ + length * d + count] = 0;
-                Cx[start_ + length * d + count] = 0;
+                Cj[start_ + count] = k;
+                Cx[start_ + count] = Bx[kk];
                 count++;
             }
         }
@@ -923,9 +923,9 @@ void matmat_node_basis_flat_parallel_wcon_kernel(T* K_flat, int* elements_flat, 
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_nodes) return;
 
-    int start_ = Cp[i*dof];
-    int end_ = Cp[i*dof+1];
-    int length = end_ - start_;
+    // int start_ = Cp[i*dof];
+    // int end_ = Cp[i*dof+1];
+    // int length = end_ - start_;
 
     int st, en;
     if (i < n_nodes-1) {
@@ -959,14 +959,16 @@ void matmat_node_basis_flat_parallel_wcon_kernel(T* K_flat, int* elements_flat, 
                     if (con_map[i*dof+d] == true) {
                         continue;
                     }
+                    int start_ = Cp[i*dof+d];
+                    int end_ = Cp[i*dof+d+1];
                     for (int ll = start_; ll < end_; ll++) {
-                        if (Cj[ll + length * d] == k) {
-                            atomicAdd(&Cx[ll + length * d], 
+                        if (Cj[ll] == k) {
+                            atomicAdd(&Cx[ll], 
                                     K_flat[k_start + d*size*dof + l] * Bx[kk] * weight);
                             break;
-                        } else if (Cj[ll + length * d] == -1) {
-                            Cj[ll + length * d] = k;
-                            atomicAdd(&Cx[ll + length * d], 
+                        } else if (Cj[ll] == -1) {
+                            Cj[ll] = k;
+                            atomicAdd(&Cx[ll], 
                                     K_flat[k_start + d*size*dof + l] * Bx[kk] * weight);
                             break;
                         }
@@ -980,15 +982,11 @@ void matmat_node_basis_flat_parallel_wcon_kernel(T* K_flat, int* elements_flat, 
         if (con_map[i*dof+d] == true) {
             int jj = i*dof+d;
             int count = 0;
+            int start_ = Cp[i*dof+d];
             for (int kk = Bp[jj]; kk < Bp[jj+1]; kk++){
                 int k = Bj[kk];
-                Cj[start_ + length * d + count] = k;
-                Cx[start_ + length * d + count] = Bx[kk];
-                count++;
-            }
-            while (count < length) {
-                Cj[start_ + length * d + count] = 0;
-                Cx[start_ + length * d + count] = 0;
+                Cj[start_ + count] = k;
+                Cx[start_ + count] = Bx[kk];
                 count++;
             }
         }
@@ -1003,9 +1001,9 @@ void matmat_node_basis_parallel_wcon_kernel(T* K_single, int* elements_flat, int
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if (i >= n_nodes) return;
 
-	int start_ = Cp[i*dof];
-	int end_ = Cp[i*dof+1];
-	int length = end_ - start_;
+	// int start_ = Cp[i*dof];
+	// int end_ = Cp[i*dof+1];
+	// int length = end_ - start_;
 
     int st, en;
     if (i < n_nodes-1) {
@@ -1035,13 +1033,15 @@ void matmat_node_basis_parallel_wcon_kernel(T* K_single, int* elements_flat, int
                     if (con_map[i*dof+d] == true) {
                         continue;
                     }
+                    int start_ = Cp[i*dof+d];
+                    int end_ = Cp[i*dof+d+1];
                     for (int ll = start_; ll < end_; ll++) {
-                        if (Cj[ll + length * d] == k) {
-                            atomicAdd(&Cx[ll + length * d], K_single[(relative_dof*dof+d) * elements_size * dof + l] * Bx[kk] * weights[elements_ids_j]);
+                        if (Cj[ll] == k) {
+                            atomicAdd(&Cx[ll], K_single[(relative_dof*dof+d) * elements_size * dof + l] * Bx[kk] * weights[elements_ids_j]);
                             break;
-                        } else if (Cj[ll + length * d] == -1) {
-                            Cj[ll + length * d] = k;
-                            atomicAdd(&Cx[ll + length * d], K_single[(relative_dof*dof+d) * elements_size * dof + l] * Bx[kk] * weights[elements_ids_j]);
+                        } else if (Cj[ll] == -1) {
+                            Cj[ll] = k;
+                            atomicAdd(&Cx[ll], K_single[(relative_dof*dof+d) * elements_size * dof + l] * Bx[kk] * weights[elements_ids_j]);
                             break;
                         }
                     }
@@ -1054,15 +1054,11 @@ void matmat_node_basis_parallel_wcon_kernel(T* K_single, int* elements_flat, int
         if (con_map[i*dof+d] == true) {
             int jj = i*dof+d;
             int count = 0;
+            int start_ = Cp[i*dof+d];
             for (int kk = Bp[jj]; kk < Bp[jj+1]; kk++){
                 int k = Bj[kk];
-                Cj[start_ + length * d + count] = k;
-                Cx[start_ + length * d + count] = Bx[kk];
-                count++;
-            }
-            while (count < length) {
-                Cj[start_ + length * d + count] = 0;
-                Cx[start_ + length * d + count] = 0;
+                Cj[start_ + count] = k;
+                Cx[start_ + count] = Bx[kk];
                 count++;
             }
         }

@@ -367,7 +367,7 @@ def mat_vec_node_basis_parallel_wcon(K_single, elements_flat, el_ids, weights, s
                     val += K_single[relative_dof*dof+k,l] * vec[kk]
                 out[i*dof+k] += val * weight
 
-@jit("i4[:](i4[:], i4[:], i4[:], i4[:], i4, i4, i4, i4, i4[:], i4[:])")
+@njit("i4[:](i4[:], i4[:], i4[:], i4[:], i4, i4, i4, i4, i4[:], i4[:])")
 def matmat_node_basis_nnz_per_row(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj):
     nnz_per_row = np.zeros(n_nodes*dof, dtype=np.int32)
     mask = np.zeros(n_col, dtype=np.int32)-1
@@ -393,6 +393,43 @@ def matmat_node_basis_nnz_per_row(elements_flat, el_ids, sorter, node_ids, n_nod
                     if mask[k] != i:
                         mask[k] = i
                         nnz_per_row[i*dof:(i+1)*dof] += 1
+    return nnz_per_row
+
+@njit("i4[:](i4[:], i4[:], i4[:], i4[:], i4, i4, i4, i4, i4[:], i4[:], bool_[:])")
+def matmat_node_basis_nnz_per_row_wcon(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, con_map):
+    nnz_per_row = np.zeros(n_nodes*dof, dtype=np.int32)
+    mask = np.zeros(n_col, dtype=np.int32)-1
+    for i in range(n_nodes):
+        if i < n_nodes-1:
+            st = node_ids[i]
+            en = node_ids[i+1]
+        else:
+            st = node_ids[i]
+            en = len(elements_flat)
+
+        n_elements = en-st
+        for j in range(n_elements):
+            e_ind_j = sorter[st+j]
+            elements_ids_j = el_ids[e_ind_j]
+            start = elements_ids_j * elements_size
+            end = start + elements_size
+            elements_map = elements_flat[start:end]
+            for l in range(elements_size*dof):
+                jj = elements_map[l//dof]*dof+l%dof
+                
+                if con_map[jj]:
+                    continue
+                
+                for kk in range(Bp[jj], Bp[jj+1]):
+                    k = Bj[kk]
+                    if mask[k] != i:
+                        mask[k] = i
+                        nnz_per_row[i*dof:(i+1)*dof] += 1
+                        
+        for d in range(dof):
+            if con_map[i*dof+d]:
+                nnz_per_row[i*dof+d] = Bp[i*dof+d+1] - Bp[i*dof+d]
+    
     return nnz_per_row
 
 @njit("i4[:](i4[:], i4[:], i4[:], i4[:], i4, i4, i4, i4, i4[:], i4[:], i4)", cache=True, parallel=True)
@@ -485,10 +522,6 @@ def matmat_node_basis_prallel_kernel_wcon(K_single, elements_flat, el_ids, weigh
 
         n_elements = en-st
         
-        start_ = Cp[i*dof]
-        end_ = Cp[i*dof+1]
-        length = end_ - start_
-        
         for j in range(n_elements):
             e_ind_j = sorter[st+j]
             elements_ids_j = el_ids[e_ind_j]
@@ -508,27 +541,26 @@ def matmat_node_basis_prallel_kernel_wcon(K_single, elements_flat, el_ids, weigh
                     for d in range(dof):
                         if con_map[i*dof+d]:
                             continue
+                        start_ = Cp[i*dof+d]
+                        end_ = Cp[i*dof+d+1]
                         for ll in range(start_, end_):
-                            if Cj[ll + length*d] == k:
-                                Cx[ll + length * d] += K_single[relative_dof*dof+d,l] * Bx[kk] * weight
+                            if Cj[ll] == k:
+                                Cx[ll] += K_single[relative_dof*dof+d,l] * Bx[kk] * weight
                                 break
-                            elif Cj[ll + length*d] == -1:
-                                Cj[ll + length * d] = k
-                                Cx[ll + length * d] += K_single[relative_dof*dof+d,l] * Bx[kk] * weight
+                            elif Cj[ll] == -1:
+                                Cj[ll] = k
+                                Cx[ll] += K_single[relative_dof*dof+d,l] * Bx[kk] * weight
                                 break
         
         for d in range(dof):
             if con_map[i*dof+d]:
                 jj = i*dof+d
                 count = 0
+                start_ = Cp[jj]
                 for kk in range(Bp[jj], Bp[jj+1]):
                     k = Bj[kk]
-                    Cj[start_ + length*d + count] = k
-                    Cx[start_ + length*d + count] = Bx[kk]
-                    count += 1
-                while count < length:
-                    Cj[start_ + length*d + count] = 0
-                    Cx[start_ + length*d + count] = 0
+                    Cj[start_ + count] = k
+                    Cx[start_ + count] = Bx[kk]
                     count += 1
 
 def matmat_node_basis_prallel(K_single, elements_flat, el_ids, weights, sorter, node_ids, n_nodes, dof, elements_size, B, parallel=False, max_source_nnz=None, cons=None):
@@ -541,7 +573,11 @@ def matmat_node_basis_prallel(K_single, elements_flat, el_ids, weights, sorter, 
             max_nnz = (np.diff(Bp).max() * (elements_size * dof) * np.unique(elements_flat, return_counts=True)[1].max())
         else:
             max_nnz = max_source_nnz *  np.diff(Bp).max()
-        nnz_per_row = matmat_node_basis_nnz_per_row_parallel(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
+        
+        if cons is not None:
+            nnz_per_row = matmat_node_basis_nnz_per_row_wcon(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, cons)
+        else:
+            nnz_per_row = matmat_node_basis_nnz_per_row_parallel(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
     else:
         nnz_per_row = matmat_node_basis_nnz_per_row(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj)
     Cp = np.zeros(n_nodes*dof+1, dtype=np.int32)
@@ -633,10 +669,6 @@ def matmat_node_basis_full_prallel_kernel_wcon(Ks, elements_flat, el_ids, weight
 
         n_elements = en-st
         
-        start_ = Cp[i*dof]
-        end_ = Cp[i*dof+1]
-        length = end_ - start_
-        
         for j in range(n_elements):
             e_ind_j = sorter[st+j]
             elements_ids_j = el_ids[e_ind_j]
@@ -656,27 +688,27 @@ def matmat_node_basis_full_prallel_kernel_wcon(Ks, elements_flat, el_ids, weight
                     for d in range(dof):
                         if con_map[i*dof+d]:
                             continue
+                            
+                        start_ = Cp[i*dof+d]
+                        end_ = Cp[i*dof+d+1]
                         for ll in range(start_, end_):
-                            if Cj[ll + length*d] == k:
-                                Cx[ll + length * d] += Ks[elements_ids_j,relative_dof*dof+d,l] * Bx[kk] * weight
+                            if Cj[ll] == k:
+                                Cx[ll] += Ks[elements_ids_j,relative_dof*dof+d,l] * Bx[kk] * weight
                                 break
-                            elif Cj[ll + length*d] == -1:
-                                Cj[ll + length * d] = k
-                                Cx[ll + length * d] += Ks[elements_ids_j,relative_dof*dof+d,l] * Bx[kk] * weight
+                            elif Cj[ll] == -1:
+                                Cj[ll] = k
+                                Cx[ll] += Ks[elements_ids_j,relative_dof*dof+d,l] * Bx[kk] * weight
                                 break
         
         for d in range(dof):
             if con_map[i*dof+d]:
                 jj = i*dof+d
                 count = 0
+                start_ = Cp[jj]
                 for kk in range(Bp[jj], Bp[jj+1]):
                     k = Bj[kk]
-                    Cj[start_ + length*d + count] = k
-                    Cx[start_ + length*d + count] = Bx[kk]
-                    count += 1
-                while count < length:
-                    Cj[start_ + length*d + count] = 0
-                    Cx[start_ + length*d + count] = 0
+                    Cj[start_ + count] = k
+                    Cx[start_ + count] = Bx[kk]
                     count += 1
                     
 def matmat_node_basis_full_prallel(Ks, elements_flat, el_ids, weights, sorter, node_ids, n_nodes, dof, elements_size, B, parallel=False, max_source_nnz=None, cons=None):
@@ -689,7 +721,11 @@ def matmat_node_basis_full_prallel(Ks, elements_flat, el_ids, weights, sorter, n
             max_nnz = (np.diff(Bp).max() * (elements_size * dof) * np.unique(elements_flat, return_counts=True)[1].max())
         else:
             max_nnz = max_source_nnz *  np.diff(Bp).max()
-        nnz_per_row = matmat_node_basis_nnz_per_row_parallel(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
+            
+        if cons is not None:
+            nnz_per_row = matmat_node_basis_nnz_per_row_wcon(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, cons)
+        else:
+            nnz_per_row = matmat_node_basis_nnz_per_row_parallel(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj, max_nnz)
     else:
         nnz_per_row = matmat_node_basis_nnz_per_row(elements_flat, el_ids, sorter, node_ids, n_nodes, dof, elements_size, n_col, Bp, Bj)
     Cp = np.zeros(n_nodes*dof+1, dtype=np.int32)
@@ -725,7 +761,7 @@ def matmat_node_basis_full_prallel_(Ks, elements_flat, el_ids, weights, sorter, 
     M.indptr = Cp
     return M
 
-@jit("i4[:](i4[:], i4[:], i4[:], i4[:], i4[:], i4, i4, i4, i4[:], i4[:])")
+@njit("i4[:](i4[:], i4[:], i4[:], i4[:], i4[:], i4, i4, i4, i4[:], i4[:])")
 def matmat_node_basis_flat_nnz_per_row(elements_flat, elements_ptr, el_ids, sorter, node_ids, n_nodes, dof, n_col, Bp, Bj):
     nnz_per_row = np.zeros(n_nodes*dof, dtype=np.int32)
     mask = np.zeros(n_col, dtype=np.int32)-1
@@ -794,6 +830,52 @@ def matmat_node_basis_flat_nnz_per_row_parallel(elements_flat, elements_ptr, el_
                             print("Error: max_nnz reached ... use a larger max_nnz")
     return nnz_per_row
 
+@njit("i4[:](i4[:], i4[:], i4[:], i4[:], i4[:], i4, i4, i4, i4[:], i4[:],i4, bool_[:])", cache=True, parallel=True)
+def matmat_node_basis_flat_nnz_per_row_parallel_wcon(elements_flat, elements_ptr, el_ids, sorter, node_ids, n_nodes, dof, n_col, Bp, Bj, max_nnz, con_map):
+    nnz_per_row = np.zeros(n_nodes*dof, dtype=np.int32)
+    for i in prange(n_nodes):
+        if i<n_nodes-1:
+            st = node_ids[i]
+            en = node_ids[i+1]
+        else:
+            st = node_ids[i]
+            en = len(elements_flat)
+        
+        n_elements = en-st
+        
+        rolling_list = np.zeros(max_nnz, dtype=np.int32)-1
+        
+        for j in range(n_elements):
+            e_ind_j = sorter[st+j]
+            elements_ids_j = el_ids[e_ind_j]
+            start = elements_ptr[elements_ids_j]
+            end = elements_ptr[elements_ids_j+1]
+            size = end - start
+            elements_map = elements_flat[start:end]
+            
+            for l in range(size*dof):
+                jj = elements_map[l//dof]*dof+l%dof
+                
+                if con_map[jj]:
+                    continue
+                
+                for kk in range(Bp[jj], Bp[jj+1]):
+                    k = Bj[kk]
+                    for ll in range(max_nnz):
+                        if rolling_list[ll] == k:
+                            break
+                        elif rolling_list[ll] == -1:
+                            rolling_list[ll] = k
+                            nnz_per_row[i*dof:(i+1)*dof] += 1
+                            break
+                        if ll == max_nnz-1:
+                            print("Error: max_nnz reached ... use a larger max_nnz")
+                            
+        for d in range(dof):
+            if con_map[i*dof+d]:
+                nnz_per_row[i*dof+d] = Bp[i*dof+d+1] - Bp[i*dof+d]
+    return nnz_per_row
+
 @njit(["void(f4[:], i4[:], i4[:], i4[:], i4[:], f4[:], i4[:], i4[:], i4, i4, i4[:], i4[:], f4[:], i4[:], i4[:], f4[:])",
        "void(f8[:], i4[:], i4[:], i4[:], i4[:], f8[:], i4[:], i4[:], i4, i4, i4[:], i4[:], f8[:], i4[:], i4[:], f8[:])"], cache=True, parallel=True)
 def matmat_node_basis_flat_prallel_kernel(K_flat, elements_flat, K_ptr, elements_ptr, el_ids, weights, sorter, node_ids, n_nodes, dof, Bp, Bj, Bx, Cp, Cj, Cx):
@@ -851,10 +933,6 @@ def matmat_node_basis_flat_prallel_kernel_wcon(K_flat, elements_flat, K_ptr, ele
         
         n_elements = en-st
         
-        start_ = Cp[i*dof]
-        end_ = Cp[i*dof+1]
-        length = end_ - start_
-        
         for j in range(n_elements):
             e_ind_j = sorter[st+j]
             elements_ids_j = el_ids[e_ind_j]
@@ -878,26 +956,26 @@ def matmat_node_basis_flat_prallel_kernel_wcon(K_flat, elements_flat, K_ptr, ele
                     for d in range(dof):
                         if con_map[i*dof+d]:
                             continue
+                        
+                        start_ = Cp[i*dof+d]
+                        end_ = Cp[i*dof+d+1]
                         for ll in range(start_, end_):
-                            if Cj[ll + length*d] == k:
-                                Cx[ll + length * d] += K_flat[k_start + d*size*dof + l] * Bx[kk] * weight
+                            if Cj[ll] == k:
+                                Cx[ll] += K_flat[k_start + d*size*dof + l] * Bx[kk] * weight
                                 break
-                            elif Cj[ll + length*d] == -1:
-                                Cj[ll + length * d] = k
-                                Cx[ll + length * d] += K_flat[k_start + d*size*dof + l] * Bx[kk] * weight
+                            elif Cj[ll] == -1:
+                                Cj[ll] = k
+                                Cx[ll] += K_flat[k_start + d*size*dof + l] * Bx[kk] * weight
                                 break
         for d in range(dof):
             if con_map[i*dof+d]:
                 jj = i*dof+d
                 count = 0
+                start_ = Cp[jj]
                 for kk in range(Bp[jj], Bp[jj+1]):
                     k = Bj[kk]
-                    Cj[start_ + length*d + count] = k
-                    Cx[start_ + length*d + count] = Bx[kk]
-                    count += 1
-                while count < length:
-                    Cj[start_ + length*d + count] = 0
-                    Cx[start_ + length*d + count] = 0
+                    Cj[start_ + count] = k
+                    Cx[start_ + count] = Bx[kk]
                     count += 1
 
 def matmat_node_basis_flat_prallel(K_flat, elements_flat, K_ptr, elements_ptr, el_ids, weights, sorter, node_ids, n_nodes, dof, B, parallel=False, max_source_nnz=None, cons=None):
@@ -910,7 +988,11 @@ def matmat_node_basis_flat_prallel(K_flat, elements_flat, K_ptr, elements_ptr, e
             max_nnz = (np.diff(Bp).max() * (np.diff(elements_ptr).max() * dof) * np.unique(elements_flat, return_counts=True)[1].max())
         else:
             max_nnz = max_source_nnz *  np.diff(Bp).max()
-        nnz_per_row = matmat_node_basis_flat_nnz_per_row_parallel(elements_flat, elements_ptr, el_ids, sorter, node_ids, n_nodes, dof, n_col, Bp, Bj, max_nnz)
+        
+        if cons is not None:
+            nnz_per_row = matmat_node_basis_flat_nnz_per_row_parallel_wcon(elements_flat, elements_ptr, el_ids, sorter, node_ids, n_nodes, dof, n_col, Bp, Bj, max_nnz, cons)
+        else:
+            nnz_per_row = matmat_node_basis_flat_nnz_per_row_parallel(elements_flat, elements_ptr, el_ids, sorter, node_ids, n_nodes, dof, n_col, Bp, Bj, max_nnz)
     else:
         nnz_per_row = matmat_node_basis_flat_nnz_per_row(elements_flat, elements_ptr, el_ids, sorter, node_ids, n_nodes, dof, n_col, Bp, Bj)
     Cp = np.zeros(n_nodes*dof+1, dtype=np.int32)
